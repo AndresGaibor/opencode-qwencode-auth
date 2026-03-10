@@ -8,7 +8,7 @@
   <img src="assets/screenshot.png" alt="OpenCode com Qwen Code" width="800">
 </p>
 
-**Autentique o OpenCode CLI com sua conta qwen.ai.** Este plugin permite usar modelos Qwen (Coder, Max, Plus e mais) com **2.000 requisições gratuitas por dia** - sem API key ou cartão de crédito!
+**Autentique o OpenCode CLI com sua conta qwen.ai.** Este plugin permite usar o modelo `coder-model` com **2.000 requisições gratuitas por dia** - sem API key ou cartão de crédito!
 
 [🇺🇸 Read in English](./README.md)
 
@@ -17,9 +17,14 @@
 - 🔐 **OAuth Device Flow** - Autenticação segura via navegador (RFC 8628)
 - ⚡ **Polling Automático** - Não precisa pressionar Enter após autorizar
 - 🆓 **2.000 req/dia grátis** - Plano gratuito generoso sem cartão
-- 🧠 **1M de contexto** - Modelos com 1 milhão de tokens de contexto
+- 🧠 **1M de contexto** - 1 milhão de tokens de contexto
 - 🔄 **Auto-refresh** - Tokens renovados automaticamente antes de expirar
 - 🔗 **Compatível com qwen-code** - Reutiliza credenciais de `~/.qwen/oauth_creds.json`
+- 🌐 **Roteamento Dinâmico** - Resolução automática da URL base da API por região
+- 🏎️ **Suporte a KV Cache** - Headers oficiais DashScope para alta performance
+- 🎯 **Correção de Rate Limit** - Headers oficiais previnem rate limiting agressivo (Fix #4)
+- 🔍 **Session Tracking** - IDs únicos de sessão/prompt para reconhecimento de cota
+- 🎯 **Alinhado com qwen-code** - Expõe os mesmos modelos do Qwen Code CLI oficial
 
 ## 📋 Pré-requisitos
 
@@ -69,28 +74,18 @@ Selecione **"Qwen Code (qwen.ai OAuth)"**
 
 ## 🎯 Modelos Disponíveis
 
-### Modelos de Código
+### Modelo de Código
 
-| Modelo | Contexto | Max Output | Melhor Para |
-|--------|----------|------------|-------------|
-| `qwen3-coder-plus` | 1M tokens | 64K tokens | Tarefas complexas de código |
-| `qwen3-coder-flash` | 1M tokens | 64K tokens | Respostas rápidas de código |
+| Modelo | Contexto | Max Output | Recursos |
+|--------|----------|------------|----------|
+| `coder-model` | 1M tokens | 64K tokens | Alias oficial (Auto-rotas para Qwen 3.5 Plus - Hybrid & Vision) |
 
-### Modelos de Propósito Geral
+> **Nota:** Este plugin está alinhado com o cliente oficial `qwen-code-0.12.0`, que expõe apenas o alias `coder-model`. Este modelo automaticamente rotaciona para o melhor Qwen 3.5 Plus disponível com raciocínio híbrido e capacidades de visão.
 
-| Modelo | Contexto | Max Output | Reasoning | Melhor Para |
-|--------|----------|------------|-----------|-------------|
-| `qwen3-max` | 256K tokens | 64K tokens | Não | Modelo flagship, raciocínio complexo e tool use |
-| `qwen-plus-latest` | 128K tokens | 16K tokens | Sim | Equilíbrio qualidade-velocidade com thinking mode |
-| `qwen3-235b-a22b` | 128K tokens | 32K tokens | Sim | Maior modelo open-weight MoE com thinking mode |
-| `qwen-flash` | 1M tokens | 8K tokens | Não | Ultra-rápido, baixo custo para tarefas simples |
-
-### Usando um modelo específico
+### Usando o modelo
 
 ```bash
-opencode --provider qwen-code --model qwen3-coder-plus
-opencode --provider qwen-code --model qwen3-max
-opencode --provider qwen-code --model qwen-plus-latest
+opencode --provider qwen-code --model coder-model
 ```
 
 ## ⚙️ Como Funciona
@@ -140,7 +135,6 @@ O provider `qwen-code` é adicionado via plugin. No comando `opencode auth login
 ### Rate limit excedido (erros 429)
 
 - Aguarde até meia-noite UTC para reset da cota
-- Tente usar `qwen3-coder-flash` para requisições mais leves
 - Considere a [API DashScope](https://dashscope.aliyun.com) para limites maiores
 
 ## 🛠️ Desenvolvimento

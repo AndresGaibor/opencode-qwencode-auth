@@ -14,17 +14,17 @@
 
 ## ✨ Features
 
-- 🚀 **Qwen 3.5 Plus Support** - Use the latest flagship hybrid model
 - 🔐 **OAuth Device Flow** - Secure browser-based authentication (RFC 8628)
 - ⚡ **Automatic Polling** - No need to press Enter after authorizing
 - 🆓 **2,000 req/day free** - Generous free tier with no credit card
-- 🧠 **1M context window** - Models with 1 million token context
+- 🧠 **1M context window** - 1 million token context
 - 🔄 **Auto-refresh** - Tokens renewed automatically before expiration
 - 🔗 **qwen-code compatible** - Reuses credentials from `~/.qwen/oauth_creds.json`
 - 🌐 **Dynamic Routing** - Automatic resolution of API base URL based on region
 - 🏎️ **KV Cache Support** - Official DashScope headers for high performance
 - 🎯 **Rate Limit Fix** - Official headers prevent aggressive rate limiting (Fixes #4)
 - 🔍 **Session Tracking** - Unique session/prompt IDs for proper quota recognition
+- 🎯 **Aligned with qwen-code** - Exposes same models as official Qwen Code CLI
 
 ## 🆕 What's New in v1.5.0
 
@@ -52,10 +52,10 @@ The plugin now automatically detects and uses the correct API endpoint based on 
 
 This means the plugin works correctly regardless of which region your Qwen account is associated with.
 
-### Latest Model Support
+### Aligned with qwen-code-0.12.0
 
-- ✅ **qwen3.5-plus** - Latest flagship hybrid model with reasoning + vision
-- ✅ **Vision capabilities** - Models with vision now correctly support image input
+- ✅ **coder-model** - Only model exposed (matches official Qwen Code CLI)
+- ✅ **Vision capabilities** - Supports image input
 - ✅ **Dynamic modalities** - Input modalities adapt based on model capabilities
 
 ## 📋 Prerequisites
@@ -106,29 +106,17 @@ Select **"Qwen Code (qwen.ai OAuth)"**
 
 ## 🎯 Available Models
 
-### Coding Models
+### Coding Model
 
 | Model | Context | Max Output | Features |
 |-------|---------|------------|----------|
-| `qwen3.5-plus` | 1M tokens | 64K tokens | Latest Flagship, Hybrid, Vision, Reasoning |
-| `qwen3-coder-plus` | 1M tokens | 64K tokens | Stable Qwen 3.0 Coding model |
-| `qwen3-coder-flash` | 1M tokens | 64K tokens | Fast coding responses |
-| `coder-model` | 1M tokens | 64K tokens | Official alias (Auto-routes to Qwen 3.5 Plus) |
+| `coder-model` | 1M tokens | 64K tokens | Official alias (Auto-routes to Qwen 3.5 Plus - Hybrid & Vision) |
 
-### General Purpose Models
+> **Note:** This plugin aligns with the official `qwen-code-0.12.0` client, which exposes only the `coder-model` alias. This model automatically routes to the best available Qwen 3.5 Plus with hybrid reasoning and vision capabilities.
 
-| Model | Context | Max Output | Reasoning | Best For |
-|-------|---------|------------|-----------|----------|
-| `qwen3-max` | 256K tokens | 64K tokens | No | Flagship model, complex reasoning and tool use |
-| `vision-model` | 128K tokens | 32K tokens | No | Official Vision alias (Qwen VL Plus) |
-| `qwen-plus-latest` | 128K tokens | 16K tokens | Yes | Balanced quality-speed with thinking mode |
-| `qwen-flash` | 1M tokens | 8K tokens | No | Ultra-fast, low-cost simple tasks |
-
-### Using a specific model
+### Using the model
 
 ```bash
-opencode --provider qwen-code --model qwen3.5-plus
-opencode --provider qwen-code --model qwen3-coder-plus
 opencode --provider qwen-code --model coder-model
 ```
 
@@ -183,7 +171,6 @@ The `qwen-code` provider is added via plugin. In the `opencode auth login` comma
 If you still experience rate limiting:
 - Ensure you're using v1.5.0 or later: `npm update opencode-qwencode-auth`
 - Wait until midnight UTC for quota reset
-- Try using `qwen3-coder-flash` for faster, lighter requests
 - Consider [DashScope API](https://dashscope.aliyun.com) for higher limits
 
 ## 🛠️ Development
