@@ -1,12 +1,14 @@
 /**
- * Lightweight Token Manager
+ * Robust Token Manager with File Locking
  * 
- * Simplified version of qwen-code's SharedTokenManager
- * Handles:
+ * Production-ready token management with multi-process safety
+ * Features:
  * - In-memory caching to avoid repeated file reads
- * - Preventive refresh (before expiration)
+ * - Preventive refresh (30s buffer before expiration)
  * - Reactive recovery (on 401 errors)
- * - Promise tracking to avoid concurrent refreshes
+ * - Promise tracking to avoid concurrent refreshes within same process
+ * - File locking to prevent concurrent refreshes across processes
+ * - Comprehensive debug logging (enabled via OPENCODE_QWEN_DEBUG=1)
  */
 
 import { loadCredentials, saveCredentials, getCredentialsPath } from './auth.js';
@@ -29,23 +31,42 @@ class TokenManager {
    * @returns Valid credentials or null if unavailable
    */
   async getValidCredentials(forceRefresh = false): Promise<QwenCredentials | null> {
+    const startTime = Date.now();
+    debugLogger.info('getValidCredentials called', { forceRefresh });
+
     try {
       // 1. Check in-memory cache first (unless force refresh)
       if (!forceRefresh && this.memoryCache && this.isTokenValid(this.memoryCache)) {
+        debugLogger.info('Returning from memory cache', {
+          age: Date.now() - startTime,
+          validUntil: new Date(this.memoryCache.expiryDate!).toISOString()
+        });
         return this.memoryCache;
       }
 
       // 2. If concurrent refresh is already happening, wait for it
       if (this.refreshPromise) {
         debugLogger.info('Waiting for ongoing refresh...');
-        return await this.refreshPromise;
+        const result = await this.refreshPromise;
+        debugLogger.info('Wait completed', { success: !!result, age: Date.now() - startTime });
+        return result;
       }
 
       // 3. Need to perform refresh or reload from file
       this.refreshPromise = (async () => {
-        // Check if file has valid credentials (maybe updated by another session)
+        const refreshStart = Date.now();
+        
+        // Always check file first (may have been updated by another process)
         const fromFile = loadCredentials();
         
+        debugLogger.info('File check', {
+          hasFile: !!fromFile,
+          fileValid: fromFile ? this.isTokenValid(fromFile) : 'N/A',
+          forceRefresh,
+          age: Date.now() - refreshStart
+        });
+
+        // If not forcing refresh and file has valid credentials, use them
         if (!forceRefresh && fromFile && this.isTokenValid(fromFile)) {
           debugLogger.info('Using valid credentials from file');
           this.memoryCache = fromFile;
@@ -53,7 +74,12 @@ class TokenManager {
         }
 
         // Need to perform actual refresh via API (with file locking for multi-process safety)
-        return await this.performTokenRefreshWithLock(fromFile);
+        const result = await this.performTokenRefreshWithLock(fromFile);
+        debugLogger.info('Refresh operation completed', {
+          success: !!result,
+          age: Date.now() - refreshStart
+        });
+        return result;
       })();
       
       try {
@@ -63,7 +89,7 @@ class TokenManager {
         this.refreshPromise = null;
       }
     } catch (error) {
-      debugLogger.error('Failed to get valid credentials:', error);
+      debugLogger.error('Failed to get valid credentials', error);
       return null;
     }
   }
@@ -75,34 +101,61 @@ class TokenManager {
     if (!credentials.expiryDate || !credentials.accessToken) {
       return false;
     }
-    const isExpired = Date.now() > credentials.expiryDate - TOKEN_REFRESH_BUFFER_MS;
-    return !isExpired;
+    const now = Date.now();
+    const expiryWithBuffer = credentials.expiryDate - TOKEN_REFRESH_BUFFER_MS;
+    const valid = now < expiryWithBuffer;
+    
+    debugLogger.debug('Token validity check', {
+      now,
+      expiryDate: credentials.expiryDate,
+      buffer: TOKEN_REFRESH_BUFFER_MS,
+      expiryWithBuffer,
+      valid,
+      timeUntilExpiry: expiryWithBuffer - now
+    });
+    
+    return valid;
   }
 
   /**
    * Perform the actual token refresh
    */
   private async performTokenRefresh(current: QwenCredentials | null): Promise<QwenCredentials | null> {
+    debugLogger.info('performTokenRefresh called', {
+      hasCurrent: !!current,
+      hasRefreshToken: !!current?.refreshToken
+    });
+
     if (!current?.refreshToken) {
       debugLogger.warn('Cannot refresh: No refresh token available');
       return null;
     }
 
     try {
-      debugLogger.info('Refreshing access token...');
+      debugLogger.info('Calling refreshAccessToken API...');
+      const startTime = Date.now();
       const refreshed = await refreshAccessToken(current.refreshToken);
+      const elapsed = Date.now() - startTime;
+      
+      debugLogger.info('Token refresh API response', {
+        elapsed,
+        hasAccessToken: !!refreshed.accessToken,
+        hasRefreshToken: !!refreshed.refreshToken,
+        expiryDate: refreshed.expiryDate ? new Date(refreshed.expiryDate).toISOString() : 'N/A'
+      });
       
       // Save refreshed credentials
       saveCredentials(refreshed);
+      debugLogger.info('Credentials saved to file');
       
       // Update cache
       this.memoryCache = refreshed;
-      
       debugLogger.info('Token refreshed successfully');
+      
       return refreshed;
     } catch (error) {
-      debugLogger.error('Token refresh failed:', error);
-      return null;
+      debugLogger.error('Token refresh failed', error);
+      throw error; // Re-throw so caller knows it failed
     }
   }
 
@@ -113,8 +166,15 @@ class TokenManager {
     const credPath = getCredentialsPath();
     const lock = new FileLock(credPath);
 
-    // Try to acquire lock (wait up to 5 seconds)
+    debugLogger.info('Attempting to acquire file lock', { credPath });
+    const lockStart = Date.now();
     const lockAcquired = await lock.acquire(5000, 100);
+    const lockElapsed = Date.now() - lockStart;
+
+    debugLogger.info('Lock acquisition result', {
+      acquired: lockAcquired,
+      elapsed: lockElapsed
+    });
 
     if (!lockAcquired) {
       // Another process is doing refresh, wait and reload from file
@@ -123,20 +183,32 @@ class TokenManager {
       
       // Reload credentials from file (should have new token now)
       const reloaded = loadCredentials();
+      debugLogger.info('Reloaded credentials after wait', {
+        hasCredentials: !!reloaded,
+        valid: reloaded ? this.isTokenValid(reloaded) : 'N/A'
+      });
+      
       if (reloaded && this.isTokenValid(reloaded)) {
         this.memoryCache = reloaded;
-        debugLogger.info('Loaded refreshed credentials from file');
+        debugLogger.info('Loaded refreshed credentials from file (multi-process)');
         return reloaded;
       }
       
-      // Still invalid, try again without lock (edge case)
+      // Still invalid, try again without lock (edge case: other process failed)
+      debugLogger.warn('Fallback: attempting refresh without lock');
       return await this.performTokenRefresh(current);
     }
 
     try {
       // Critical section: only one process executes here
-      // Double-check if another process already refreshed while we were waiting for lock
+      
+      // Double-check: another process may have refreshed while we were waiting for lock
       const fromFile = loadCredentials();
+      debugLogger.info('Double-check after lock acquisition', {
+        hasFile: !!fromFile,
+        fileValid: fromFile ? this.isTokenValid(fromFile) : 'N/A'
+      });
+      
       if (fromFile && this.isTokenValid(fromFile)) {
         debugLogger.info('Credentials already refreshed by another process');
         this.memoryCache = fromFile;
@@ -144,11 +216,33 @@ class TokenManager {
       }
 
       // Perform the actual refresh
-      return await this.performTokenRefresh(current);
+      debugLogger.info('Performing refresh in critical section');
+      return await this.performTokenRefresh(fromFile);
     } finally {
       // Always release lock, even if error occurs
       lock.release();
+      debugLogger.info('File lock released');
     }
+  }
+
+  /**
+   * Get current state for debugging
+   */
+  getState(): {
+    hasMemoryCache: boolean;
+    memoryCacheValid: boolean;
+    hasRefreshPromise: boolean;
+    fileExists: boolean;
+    fileValid: boolean;
+  } {
+    const fromFile = loadCredentials();
+    return {
+      hasMemoryCache: !!this.memoryCache,
+      memoryCacheValid: this.memoryCache ? this.isTokenValid(this.memoryCache) : false,
+      hasRefreshPromise: !!this.refreshPromise,
+      fileExists: !!fromFile,
+      fileValid: fromFile ? this.isTokenValid(fromFile) : false
+    };
   }
 
   private delay(ms: number): Promise<void> {
@@ -159,6 +253,7 @@ class TokenManager {
    * Clear cached credentials
    */
   clearCache(): void {
+    debugLogger.info('Cache cleared');
     this.memoryCache = null;
   }
 
@@ -166,6 +261,11 @@ class TokenManager {
    * Manually set credentials
    */
   setCredentials(credentials: QwenCredentials): void {
+    debugLogger.info('Setting credentials manually', {
+      hasAccessToken: !!credentials.accessToken,
+      hasRefreshToken: !!credentials.refreshToken,
+      expiryDate: credentials.expiryDate ? new Date(credentials.expiryDate).toISOString() : 'N/A'
+    });
     this.memoryCache = credentials;
     saveCredentials(credentials);
   }
