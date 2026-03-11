@@ -109,72 +109,90 @@ export const QwenAuthPlugin = async (_input: unknown) => {
           baseURL: baseURL,
           headers: {
             ...QWEN_OFFICIAL_HEADERS,
-            'X-Metadata': JSON.stringify({
-              sessionId: PLUGIN_SESSION_ID,
-              promptId: randomUUID(),
-              source: 'opencode-qwencode-auth'
-            })
           },
           // Custom fetch with throttling, retry and 401 recovery
           fetch: async (url: string, options: any = {}) => {
             return requestQueue.enqueue(async () => {
-              let retryCount401 = 0;
+              let authRetryCount = 0;
 
-              return retryWithBackoff(
-                async () => {
-                  // Always get latest token (it might have been refreshed)
-                  const currentCreds = await tokenManager.getValidCredentials();
-                  const token = currentCreds?.accessToken;
-                  
-                  if (!token) throw new Error('No access token available');
+              const executeRequest = async (): Promise<Response> => {
+                // Get latest token (possibly refreshed by concurrent request)
+                const currentCreds = await tokenManager.getValidCredentials();
+                const token = currentCreds?.accessToken;
+                
+                if (!token) throw new Error('No access token available');
 
-                  // Prepare headers
-                  const headers: Record<string, string> = {
-                    ...QWEN_OFFICIAL_HEADERS,
-                    ...(options.headers || {}),
-                    'Authorization': `Bearer ${token}`,
-                    'X-Metadata': JSON.stringify({
-                      sessionId: PLUGIN_SESSION_ID,
-                      promptId: randomUUID(),
-                      source: 'opencode-qwencode-auth'
-                    })
-                  };
+                // Prepare merged headers
+                const mergedHeaders: Record<string, string> = {
+                  ...QWEN_OFFICIAL_HEADERS,
+                };
 
-                  const response = await fetch(url, {
-                    ...options,
-                    headers
-                  });
-
-                  // Handle 401: Force refresh once
-                  if (response.status === 401 && retryCount401 < 1) {
-                    retryCount401++;
-                    debugLogger.warn('401 Unauthorized detected. Forcing token refresh...');
-                    await tokenManager.getValidCredentials(true);
-                    
-                    const error: any = new Error('Unauthorized - retrying after refresh');
-                    error.status = 401;
-                    throw error;
-                  }
-
-                  if (!response.ok) {
-                    const errorText = await response.text().catch(() => '');
-                    const error: any = new Error(`HTTP ${response.status}: ${errorText}`);
-                    error.status = response.status;
-                    throw error;
-                  }
-
-                  return response;
-                },
-                {
-                  authType: 'qwen-oauth',
-                  maxAttempts: 7,
-                  shouldRetryOnError: (error: any) => {
-                    const status = error.status || getErrorStatus(error);
-                    // Retry on 401 (if within limit), 429 (rate limit), and 5xx (server errors)
-                    return status === 401 || status === 429 || (status !== undefined && status >= 500 && status < 600);
+                // Merge provided headers (handles both plain object and Headers instance)
+                if (options.headers) {
+                  if (typeof (options.headers as any).entries === 'function') {
+                    for (const [k, v] of (options.headers as any).entries()) {
+                      const kl = k.toLowerCase();
+                      if (!kl.startsWith('x-dashscope') && kl !== 'user-agent' && kl !== 'authorization') {
+                        mergedHeaders[k] = v;
+                      }
+                    }
+                  } else {
+                    for (const [k, v] of Object.entries(options.headers)) {
+                      const kl = k.toLowerCase();
+                      if (!kl.startsWith('x-dashscope') && kl !== 'user-agent' && kl !== 'authorization') {
+                        mergedHeaders[k] = v as string;
+                      }
+                    }
                   }
                 }
-              );
+
+                // Force our Authorization token
+                mergedHeaders['Authorization'] = `Bearer ${token}`;
+
+                // Optional: X-Metadata might be expected by some endpoints for free quota tracking
+                // but let's try without it first to match official client closer
+                // mergedHeaders['X-Metadata'] = JSON.stringify({ ... });
+
+                // Perform the request
+                const response = await fetch(url, {
+                  ...options,
+                  headers: mergedHeaders
+                });
+
+                // Reactive recovery for 401 (token expired mid-session)
+                if (response.status === 401 && authRetryCount < 1) {
+                  authRetryCount++;
+                  debugLogger.warn('401 Unauthorized detected. Forcing token refresh...');
+                  
+                  // Force refresh from API
+                  const refreshed = await tokenManager.getValidCredentials(true);
+                  if (refreshed?.accessToken) {
+                    debugLogger.info('Token refreshed, retrying request...');
+                    return executeRequest(); // Recursive retry with new token
+                  }
+                }
+
+                // Error handling for retryWithBackoff
+                if (!response.ok) {
+                  const errorText = await response.text().catch(() => '');
+                  const error: any = new Error(`HTTP ${response.status}: ${errorText}`);
+                  error.status = response.status;
+                  throw error;
+                }
+
+                return response;
+              };
+
+              // Use official retry logic for 429/5xx errors
+              return retryWithBackoff(() => executeRequest(), {
+                authType: 'qwen-oauth',
+                maxAttempts: 7,
+                shouldRetryOnError: (error: any) => {
+                  const status = error.status || getErrorStatus(error);
+                  // Retry on 401 (handled by executeRequest recursion too), 429, and 5xx
+                  return status === 401 || status === 429 || (status !== undefined && status >= 500 && status < 600);
+                }
+              });
             });
           }
         };

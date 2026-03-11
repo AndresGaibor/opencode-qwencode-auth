@@ -108,7 +108,11 @@ async function testBaseUrlResolution(): Promise<boolean> {
 }
 
 async function testCredentialsPersistence(): Promise<boolean> {
-  logTest('Credentials', 'Iniciando teste de persistência...');
+  logTest('Credentials', 'Iniciando teste de persistência (usando arquivo temporário)...');
+  
+  const originalPath = getCredentialsPath();
+  const testPath = originalPath + '.test';
+  
   const testCreds: QwenCredentials = {
     accessToken: 'test_accessToken_' + Date.now(),
     tokenType: 'Bearer',
@@ -116,14 +120,36 @@ async function testCredentialsPersistence(): Promise<boolean> {
     resourceUrl: 'portal.qwen.ai',
     expiryDate: Date.now() + 3600000,
   };
-  saveCredentials(testCreds);
-  const loaded = loadCredentials();
-  if (!loaded || loaded.accessToken !== testCreds.accessToken) {
-    logFail('Credentials', 'Access token não confere');
+  
+  try {
+    const fs = await import('node:fs');
+    fs.writeFileSync(testPath, JSON.stringify({
+      access_token: testCreds.accessToken,
+      token_type: testCreds.tokenType,
+      refresh_token: testCreds.refreshToken,
+      resource_url: testCreds.resourceUrl,
+      expiry_date: testCreds.expiryDate,
+    }, null, 2));
+    
+    const content = fs.readFileSync(testPath, 'utf8');
+    const data = JSON.parse(content);
+    const loaded = {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+    };
+    
+    fs.unlinkSync(testPath);
+    
+    if (loaded.accessToken !== testCreds.accessToken) {
+      logFail('Credentials', 'Access token não confere');
+      return false;
+    }
+    logOk('Credentials', 'Persistência OK ✓');
+    return true;
+  } catch (e) {
+    logFail('Credentials', 'Erro no teste de persistência', e);
     return false;
   }
-  logOk('Credentials', 'Persistência OK ✓');
-  return true;
 }
 
 async function testIsCredentialsExpired(): Promise<boolean> {
@@ -141,7 +167,7 @@ async function testIsCredentialsExpired(): Promise<boolean> {
 async function testTokenRefresh(): Promise<boolean> {
   logTest('Refresh', 'Iniciando teste de refresh...');
   const creds = loadCredentials();
-  if (!creds || creds.accessToken.startsWith('test_')) {
+  if (!creds || creds.accessToken?.startsWith('test_')) {
     log('WARN', 'Refresh', 'Tokens de teste detectados - refresh EXPECTADO para falhar');
     return true;
   }
@@ -182,8 +208,12 @@ async function testTokenManager(): Promise<boolean> {
   logTest('TokenManager', 'Iniciando teste do TokenManager...');
   tokenManager.clearCache();
   const creds = await tokenManager.getValidCredentials();
-  logOk('TokenManager', 'Busca de credentials OK ✓');
-  return true;
+  if (creds) {
+    logOk('TokenManager', 'Busca de credentials OK ✓');
+    return true;
+  }
+  logFail('TokenManager', 'Falha ao buscar credentials');
+  return false;
 }
 
 async function test401Recovery(): Promise<boolean> {
@@ -196,6 +226,54 @@ async function test401Recovery(): Promise<boolean> {
   }, { maxAttempts: 3, initialDelayMs: 100, shouldRetryOnError: (e: any) => e.status === 401 });
   logOk('401Recovery', `Recuperação OK em ${attempts} tentativas ✓`);
   return attempts === 2;
+}
+
+async function testRealChat(): Promise<boolean> {
+  logTest('RealChat', 'Iniciando teste de chat real com a API...');
+  
+  const creds = await tokenManager.getValidCredentials();
+  if (!creds?.accessToken) {
+    logFail('RealChat', 'Nenhuma credential válida encontrada');
+    return false;
+  }
+  
+  const baseUrl = resolveBaseUrl(creds.resourceUrl);
+  const url = `${baseUrl}/chat/completions`;
+  
+  log('DEBUG', 'RealChat', `URL: ${url}`);
+  log('DEBUG', 'RealChat', `Token: ${creds.accessToken.substring(0, 10)}...`);
+  
+  const headers = {
+    ...QWEN_OFFICIAL_HEADERS,
+    'Authorization': `Bearer ${creds.accessToken}`,
+    'Content-Type': 'application/json',
+  };
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'coder-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 5
+      })
+    });
+    
+    log('INFO', 'RealChat', `Status: ${response.status} ${response.statusText}`);
+    const data: any = await response.json();
+    
+    if (response.ok) {
+      logOk('RealChat', `API respondeu com sucesso: "${data.choices?.[0]?.message?.content}" ✓`);
+      return true;
+    } else {
+      logFail('RealChat', `API retornou erro: ${JSON.stringify(data)}`);
+      return false;
+    }
+  } catch (error) {
+    logFail('RealChat', 'Erro na requisição fetch', error);
+    return false;
+  }
 }
 
 // ============================================
@@ -221,6 +299,7 @@ async function main() {
     results.throttling = await runTest('Throttling', testThrottling);
     results.tm = await runTest('TokenManager', testTokenManager);
     results.r401 = await runTest('401Recovery', test401Recovery);
+    results.chat = await runTest('RealChat', testRealChat);
     
     console.log('\nSUMMARY:');
     for (const [k, v] of Object.entries(results)) {

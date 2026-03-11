@@ -32,16 +32,21 @@ export function loadCredentials(): QwenCredentials | null {
     const content = readFileSync(credPath, 'utf8');
     const data = JSON.parse(content);
     
+    if (!data.access_token) {
+      console.warn('[QwenAuth] No access_token found in credentials file');
+      return null;
+    }
+
     return {
       accessToken: data.access_token,
-      tokenType: data.token_type,
+      tokenType: data.token_type || 'Bearer',
       refreshToken: data.refresh_token,
       resourceUrl: data.resource_url,
       expiryDate: data.expiry_date,
       scope: data.scope,
     };
   } catch (error) {
-    console.error('Failed to load Qwen credentials:', error);
+    console.error('[QwenAuth] Failed to load credentials:', error);
     return null;
   }
 }

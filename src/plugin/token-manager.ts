@@ -40,16 +40,20 @@ class TokenManager {
         return await this.refreshPromise;
       }
 
-      // 3. Check if file has valid credentials (maybe updated by another session)
-      const fromFile = loadCredentials();
-      if (!forceRefresh && fromFile && this.isTokenValid(fromFile)) {
-        debugLogger.info('Using valid credentials from file');
-        this.memoryCache = fromFile;
-        return fromFile;
-      }
+      // 3. Need to perform refresh or reload from file
+      this.refreshPromise = (async () => {
+        // Check if file has valid credentials (maybe updated by another session)
+        const fromFile = loadCredentials();
+        
+        if (!forceRefresh && fromFile && this.isTokenValid(fromFile)) {
+          debugLogger.info('Using valid credentials from file');
+          this.memoryCache = fromFile;
+          return fromFile;
+        }
 
-      // 4. Need to perform refresh
-      this.refreshPromise = this.performTokenRefresh(fromFile);
+        // Need to perform actual refresh via API
+        return await this.performTokenRefresh(fromFile);
+      })();
       
       try {
         const result = await this.refreshPromise;
