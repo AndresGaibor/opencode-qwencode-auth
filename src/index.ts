@@ -50,32 +50,31 @@ function openBrowser(url: string): void {
   }
 }
 
-/** Obtem um access token valido (com refresh se necessario) */
-async function getValidAccessToken(
-  getAuth: () => Promise<{ type: string; access?: string; refresh?: string; expires?: number }>,
-): Promise<string | null> {
-  const auth = await getAuth();
+/**
+ * Check if error is authentication-related (401, 403, token expired)
+ * Mirrors official client's isAuthError logic
+ */
+function isAuthError(error: unknown): boolean {
+  if (!error) return false;
 
-  if (!auth || auth.type !== 'oauth') {
-    return null;
-  }
+  const errorMessage = error instanceof Error
+    ? error.message.toLowerCase()
+    : String(error).toLowerCase();
 
-  let accessToken = auth.access;
+  const status = getErrorStatus(error);
 
-  // Refresh se expirado (com margem de 60s)
-  if (accessToken && auth.expires && Date.now() > auth.expires - 60_000 && auth.refresh) {
-    try {
-      const refreshed = await refreshAccessToken(auth.refresh);
-      accessToken = refreshed.accessToken;
-      saveCredentials(refreshed);
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      logTechnicalDetail(`Token refresh falhou: ${detail}`);
-      accessToken = undefined;
-    }
-  }
-
-  return accessToken ?? null;
+  return (
+    status === 401 ||
+    status === 403 ||
+    errorMessage.includes('unauthorized') ||
+    errorMessage.includes('forbidden') ||
+    errorMessage.includes('invalid access token') ||
+    errorMessage.includes('invalid api key') ||
+    errorMessage.includes('token expired') ||
+    errorMessage.includes('authentication') ||
+    errorMessage.includes('access denied') ||
+    (errorMessage.includes('token') && errorMessage.includes('expired'))
+  );
 }
 
 // ============================================
