@@ -16,6 +16,7 @@ import { refreshAccessToken } from '../qwen/oauth.js';
 import type { QwenCredentials } from '../types.js';
 import { createDebugLogger } from '../utils/debug-logger.js';
 import { FileLock } from '../utils/file-lock.js';
+import { watch } from 'node:fs';
 
 const debugLogger = createDebugLogger('TOKEN_MANAGER');
 const TOKEN_REFRESH_BUFFER_MS = 30 * 1000; // 30 seconds
@@ -33,6 +34,50 @@ class TokenManager {
   };
   private refreshPromise: Promise<QwenCredentials | null> | null = null;
   private lastFileCheck = 0;
+  private fileWatcherInitialized = false;
+
+  constructor() {
+    this.initializeFileWatcher();
+  }
+
+  /**
+   * Initialize file watcher to detect external credential changes
+   * Automatically invalidates cache when credentials file is modified
+   */
+  private initializeFileWatcher(): void {
+    if (this.fileWatcherInitialized) return;
+
+    const credPath = getCredentialsPath();
+    
+    try {
+      watch(credPath, (eventType) => {
+        if (eventType === 'change') {
+          // File was modified externally (e.g., opencode auth login)
+          // Invalidate cache to force reload on next request
+          this.invalidateCache();
+          debugLogger.info('Credentials file changed, cache invalidated');
+        }
+      });
+
+      this.fileWatcherInitialized = true;
+      debugLogger.debug('File watcher initialized', { path: credPath });
+    } catch (error) {
+      debugLogger.error('Failed to initialize file watcher', error);
+      // File watcher is optional, continue without it
+    }
+  }
+
+  /**
+   * Invalidate in-memory cache
+   * Forces reload from file on next getValidCredentials() call
+   */
+  private invalidateCache(): void {
+    this.memoryCache = {
+      credentials: null,
+      lastCheck: 0,
+    };
+    this.lastFileCheck = 0;
+  }
 
   /**
    * Get valid credentials, refreshing if necessary
