@@ -9,7 +9,7 @@ import { randomBytes, createHash, randomUUID } from 'node:crypto';
 
 import { QWEN_OAUTH_CONFIG } from '../constants.js';
 import type { QwenCredentials } from '../types.js';
-import { QwenAuthError, logTechnicalDetail } from '../errors.js';
+import { QwenAuthError, CredentialsClearRequiredError, logTechnicalDetail } from '../errors.js';
 import { retryWithBackoff, getErrorStatus } from '../utils/retry.js';
 
 /**
@@ -81,15 +81,20 @@ export async function requestDeviceAuthorization(
     code_challenge_method: 'S256',
   };
 
-  const response = await fetch(QWEN_OAUTH_CONFIG.deviceCodeEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-      'x-request-id': randomUUID(),
-    },
-    body: objectToUrlEncoded(bodyData),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+  try {
+    const response = await fetch(QWEN_OAUTH_CONFIG.deviceCodeEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        'x-request-id': randomUUID(),
+      },
+      signal: controller.signal,
+      body: objectToUrlEncoded(bodyData),
+    });
 
   if (!response.ok) {
     const errorData = await response.text();
@@ -104,6 +109,9 @@ export async function requestDeviceAuthorization(
   }
 
   return result;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -121,14 +129,19 @@ export async function pollDeviceToken(
     code_verifier: codeVerifier,
   };
 
-  const response = await fetch(QWEN_OAUTH_CONFIG.tokenEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-    },
-    body: objectToUrlEncoded(bodyData),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+  try {
+    const response = await fetch(QWEN_OAUTH_CONFIG.tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+      body: objectToUrlEncoded(bodyData),
+    });
 
   if (!response.ok) {
     const responseText = await response.text();
@@ -158,6 +171,8 @@ export async function pollDeviceToken(
       }
       throw parseError;
     }
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   return (await response.json()) as TokenResponse;
@@ -190,28 +205,39 @@ export async function refreshAccessToken(refreshToken: string): Promise<QwenCred
 
   return retryWithBackoff(
     async () => {
-      const response = await fetch(QWEN_OAUTH_CONFIG.tokenEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: objectToUrlEncoded(bodyData),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+      try {
+        const response = await fetch(QWEN_OAUTH_CONFIG.tokenEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+          body: objectToUrlEncoded(bodyData),
+        });
 
       if (!response.ok) {
         const errorText = await response.text();
         logTechnicalDetail(`Token refresh HTTP ${response.status}: ${errorText}`);
         
         // Don't retry on invalid_grant (refresh token expired/revoked)
+        // Signal that credentials need to be cleared
         if (errorText.includes('invalid_grant')) {
-          throw new QwenAuthError('invalid_grant', 'Refresh token expired or revoked');
+          throw new CredentialsClearRequiredError('Refresh token expired or revoked');
         }
         
         throw new QwenAuthError('refresh_failed', `HTTP ${response.status}: ${errorText}`);
       }
 
       const data = await response.json() as TokenResponse;
+
+      // Validate required fields
+      if (!data.access_token) {
+        throw new QwenAuthError('refresh_failed', 'No access token in refresh response');
+      }
 
       return {
         accessToken: data.access_token,
@@ -221,6 +247,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<QwenCred
         expiryDate: Date.now() + data.expires_in * 1000,
         scope: data.scope,
       };
+      } finally {
+        clearTimeout(timeoutId);
+      }
     },
     {
       maxAttempts: 5,
