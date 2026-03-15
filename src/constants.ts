@@ -89,9 +89,14 @@ export const QWEN_MODELS = {
 } as const;
 
 // Official Qwen Code CLI Headers for performance and quota recognition
-export const QWEN_OFFICIAL_HEADERS = {
-  'X-DashScope-CacheControl': 'enable',
-  'X-DashScope-AuthType': 'qwen-oauth',
-  'X-DashScope-UserAgent': 'QwenCode/0.12.0 (Linux; x64)',
-  'User-Agent': 'QwenCode/0.12.0 (Linux; x64)'
-} as const;
+// User-Agent is generated dynamically based on current platform
+import { generateUserAgent, generateDashScopeUserAgent } from './utils/user-agent.js';
+
+export function getQwenHeaders(): Record<string, string> {
+  return {
+    'X-DashScope-CacheControl': 'enable',
+    'X-DashScope-AuthType': 'qwen-oauth',
+    'X-DashScope-UserAgent': generateDashScopeUserAgent(),
+    'User-Agent': generateUserAgent(),
+  };
+}

@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-import { QWEN_PROVIDER_ID, QWEN_API_CONFIG, QWEN_MODELS, QWEN_OFFICIAL_HEADERS } from './constants.js';
+import { QWEN_PROVIDER_ID, QWEN_API_CONFIG, QWEN_MODELS, getQwenHeaders } from './constants.js';
 import type { QwenCredentials } from './types.js';
 import { resolveBaseUrl } from './plugin/auth.js';
 import {
@@ -107,7 +107,7 @@ export const QwenAuthPlugin = async (_input: unknown) => {
           apiKey: credentials.accessToken,
           baseURL: baseURL,
           headers: {
-            ...QWEN_OFFICIAL_HEADERS,
+            ...getQwenHeaders(),
           },
           // Custom fetch with throttling, retry and 401 recovery
           fetch: async (url: string, options: any = {}) => {
@@ -123,7 +123,7 @@ export const QwenAuthPlugin = async (_input: unknown) => {
 
                 // Prepare merged headers
                 const mergedHeaders: Record<string, string> = {
-                  ...QWEN_OFFICIAL_HEADERS,
+                  ...getQwenHeaders(),
                 };
 
                 // Merge provided headers (handles both plain object and Headers instance)
@@ -290,13 +290,13 @@ export const QwenAuthPlugin = async (_input: unknown) => {
     config: async (config: Record<string, unknown>) => {
       const providers = (config.provider as Record<string, unknown>) || {};
 
-      providers[QWEN_PROVIDER_ID] = {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'Qwen Code',
-        options: { 
-          baseURL: QWEN_API_CONFIG.baseUrl,
-          headers: QWEN_OFFICIAL_HEADERS
-        },
+        providers[QWEN_PROVIDER_ID] = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Qwen Code',
+          options: { 
+            baseURL: QWEN_API_CONFIG.baseUrl,
+            headers: getQwenHeaders()
+          },
         models: Object.fromEntries(
           Object.entries(QWEN_MODELS).map(([id, m]) => {
             const hasVision = 'capabilities' in m && m.capabilities?.vision;
