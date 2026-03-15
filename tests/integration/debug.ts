@@ -22,7 +22,7 @@ import {
   resolveBaseUrl,
   getCredentialsPath,
 } from '../../src/plugin/auth.js';
-import { QWEN_API_CONFIG, QWEN_OAUTH_CONFIG, QWEN_OFFICIAL_HEADERS } from '../../src/constants.js';
+import { QWEN_API_CONFIG, QWEN_OAUTH_CONFIG, getQwenHeaders } from '../../src/constants.js';
 import { retryWithBackoff, getErrorStatus } from '../../src/utils/retry.js';
 import { RequestQueue } from '../../src/plugin/request-queue.js';
 import { tokenManager } from '../../src/plugin/token-manager.js';
@@ -244,7 +244,7 @@ async function testRealChat(): Promise<boolean> {
   log('DEBUG', 'RealChat', `Token: ${creds.accessToken.substring(0, 10)}...`);
   
   const headers = {
-    ...QWEN_OFFICIAL_HEADERS,
+    ...getQwenHeaders(),
     'Authorization': `Bearer ${creds.accessToken}`,
     'Content-Type': 'application/json',
   };

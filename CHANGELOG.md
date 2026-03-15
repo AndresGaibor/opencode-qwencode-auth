@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔧 Fixes
+
+- **Dynamic User-Agent detection** - User-Agent header now dynamically detects platform and architecture instead of hardcoded Linux/x64
+  - Supports Linux, macOS, Windows, FreeBSD, OpenBSD, Solaris, AIX
+  - Supports x64, arm64, ia32, ppc64, arm, mips architectures
+  - Maintains qwen-code v0.12.0 client version for compatibility
+  - Fixes authentication on non-Linux systems and ARM devices (M1/M2/M3 Macs, Raspberry Pi, etc.)
+
+
 ## [1.5.0] - 2026-03-14 (Updated)
 
 ### 🚨 Critical Fixes
