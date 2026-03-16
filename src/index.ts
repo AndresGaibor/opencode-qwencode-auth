@@ -50,32 +50,31 @@ function openBrowser(url: string): void {
   }
 }
 
-/** Obtem um access token valido (com refresh se necessario) */
-async function getValidAccessToken(
-  getAuth: () => Promise<{ type: string; access?: string; refresh?: string; expires?: number }>,
-): Promise<string | null> {
-  const auth = await getAuth();
+/**
+ * Check if error is authentication-related (401, 403, token expired)
+ * Mirrors official client's isAuthError logic
+ */
+function isAuthError(error: unknown): boolean {
+  if (!error) return false;
 
-  if (!auth || auth.type !== 'oauth') {
-    return null;
-  }
+  const errorMessage = error instanceof Error
+    ? error.message.toLowerCase()
+    : String(error).toLowerCase();
 
-  let accessToken = auth.access;
+  const status = getErrorStatus(error);
 
-  // Refresh se expirado (com margem de 60s)
-  if (accessToken && auth.expires && Date.now() > auth.expires - 60_000 && auth.refresh) {
-    try {
-      const refreshed = await refreshAccessToken(auth.refresh);
-      accessToken = refreshed.accessToken;
-      saveCredentials(refreshed);
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      logTechnicalDetail(`Token refresh falhou: ${detail}`);
-      accessToken = undefined;
-    }
-  }
-
-  return accessToken ?? null;
+  return (
+    status === 401 ||
+    status === 403 ||
+    errorMessage.includes('unauthorized') ||
+    errorMessage.includes('forbidden') ||
+    errorMessage.includes('invalid access token') ||
+    errorMessage.includes('invalid api key') ||
+    errorMessage.includes('token expired') ||
+    errorMessage.includes('authentication') ||
+    errorMessage.includes('access denied') ||
+    (errorMessage.includes('token') && errorMessage.includes('expired'))
+  );
 }
 
 // ============================================
@@ -162,13 +161,28 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                 // Reactive recovery for 401 (token expired mid-session)
                 if (response.status === 401 && authRetryCount < 1) {
                   authRetryCount++;
-                  debugLogger.warn('401 Unauthorized detected. Forcing token refresh...');
+                  debugLogger.warn('401 Unauthorized detected. Forcing token refresh...', {
+                    url: url.substring(0, 100) + (url.length > 100 ? '...' : ''),
+                    attempt: authRetryCount,
+                    maxRetries: 1
+                  });
                   
                   // Force refresh from API
+                  const refreshStart = Date.now();
                   const refreshed = await tokenManager.getValidCredentials(true);
+                  const refreshElapsed = Date.now() - refreshStart;
+                  
                   if (refreshed?.accessToken) {
-                    debugLogger.info('Token refreshed, retrying request...');
+                    debugLogger.info('Token refreshed successfully, retrying request...', {
+                      refreshElapsed,
+                      newTokenExpiry: refreshed.expiryDate ? new Date(refreshed.expiryDate).toISOString() : 'N/A'
+                    });
                     return executeRequest(); // Recursive retry with new token
+                  } else {
+                    debugLogger.error('Failed to refresh token after 401', {
+                      refreshElapsed,
+                      hasRefreshToken: !!refreshed?.accessToken
+                    });
                   }
                 }
 
@@ -177,6 +191,16 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                   const errorText = await response.text().catch(() => '');
                   const error: any = new Error(`HTTP ${response.status}: ${errorText}`);
                   error.status = response.status;
+                  
+                  // Add context for debugging
+                  debugLogger.error('Request failed', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    url: url.substring(0, 100) + (url.length > 100 ? '...' : ''),
+                    method: options?.method || 'GET',
+                    errorText: errorText.substring(0, 200) + (errorText.length > 200 ? '...' : '')
+                  });
+                  
                   throw error;
                 }
 
