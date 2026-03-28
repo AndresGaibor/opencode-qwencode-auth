@@ -179,8 +179,8 @@ export const QwenAuthPlugin = async (ctx: PluginContext) => {
                   authSource = 'opencode';
                   debugLogger.info('OpenCode token refreshed successfully');
                 } else {
-                  // Refresh failed - need re-authentication
-                  debugLogger.warn('OpenCode token refresh failed, need re-authentication');
+                  // Refresh failed - clear invalid OpenCode auth and fallback to local
+                  debugLogger.warn('OpenCode token refresh failed, falling back to local credentials');
                   
                   // Clear the invalid OpenCode auth
                   try {
@@ -192,19 +192,27 @@ export const QwenAuthPlugin = async (ctx: PluginContext) => {
                     debugLogger.error('Failed to clear invalid OpenCode auth', e);
                   }
                   
-                  // Don't fallback to local - force re-auth
-                  console.error('\n[Qwen Auth] Token expired and refresh failed. Please re-authenticate:');
-                  console.error('  Run: opencode auth login\n');
-                  return null;
+                  // Fall through to local fallback (don't return null yet)
                 }
               } else {
-                // No refresh token - need re-auth
-                debugLogger.warn('OpenCode auth expired with no refresh token, need re-authentication');
-                return null;
+                // No refresh token - clear invalid OpenCode auth and fallback to local
+                debugLogger.warn('OpenCode auth expired with no refresh token, falling back to local');
+                
+                try {
+                  await client.auth.set({
+                    path: { id: QWEN_PROVIDER_ID },
+                    body: { type: 'oauth', refresh: '' },
+                  });
+                } catch (e) {
+                  debugLogger.error('Failed to clear invalid OpenCode auth', e);
+                }
+                
+                // Fall through to local fallback
               }
             }
           } catch (e) {
-            debugLogger.error('Failed to get OpenCode auth', e);
+            debugLogger.error('Failed to get OpenCode auth, falling back to local', e);
+            // Fall through to local fallback
           }
         }
 
