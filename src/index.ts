@@ -511,13 +511,13 @@ export const QwenAuthPlugin = async (ctx: PluginContext) => {
     config: async (config: Record<string, unknown>) => {
       const providers = (config.provider as Record<string, unknown>) || {};
 
-        providers[QWEN_PROVIDER_ID] = {
-          npm: '@ai-sdk/openai-compatible',
-          name: 'Qwen Code',
-          options: { 
-            baseURL: QWEN_API_CONFIG.baseUrl,
-            headers: getQwenHeaders()
-          },
+      providers[QWEN_PROVIDER_ID] = {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'Qwen Code',
+        options: { 
+          baseURL: QWEN_API_CONFIG.baseUrl,
+          headers: getQwenHeaders()
+        },
         models: Object.fromEntries(
           Object.entries(QWEN_MODELS).map(([id, m]) => {
             const hasVision = 'capabilities' in m && m.capabilities?.vision;
