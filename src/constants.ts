@@ -36,6 +36,34 @@ export const CALLBACK_PORT = 14561;
 
 // Available Qwen models through OAuth (portal.qwen.ai)
 // Aligned with qwen-code-0.12.0 official client - only coder-model is exposed
+
+/**
+ * Resolve reasoning default based on environment variable.
+ * 
+ * OPENCODE_QWEN_REASONING can be:
+ * - 'on' or 'true': Always enable reasoning (default)
+ * - 'off' or 'false': Disable reasoning
+ * - 'auto': Use model-specific default (coder-model = true)
+ * 
+ * Default: 'on' (reasoning enabled for all models)
+ */
+export function resolveReasoningDefault(modelId: string): boolean {
+  const envValue = process.env.OPENCODE_QWEN_REASONING?.toLowerCase();
+  
+  if (envValue === 'off' || envValue === 'false') {
+    return false;
+  }
+  
+  if (envValue === 'auto') {
+    // Model-specific defaults
+    // coder-model maps to Qwen 3.5 Plus which supports reasoning
+    return modelId === 'coder-model';
+  }
+  
+  // Default: 'on' or any other value
+  return true;
+}
+
 export const QWEN_MODELS = {
   // --- Active Model (matches qwen-code-0.12.0) ---
   'coder-model': {
@@ -44,7 +72,9 @@ export const QWEN_MODELS = {
     contextWindow: 1048576,
     maxOutput: 65536,
     description: 'Auto-routed coding model (Maps to Qwen 3.5 Plus - Hybrid & Vision)',
-    reasoning: false,
+    // Reasoning enabled by default - Qwen 3.5 Plus supports hybrid reasoning
+    // Can be disabled via OPENCODE_QWEN_REASONING=off environment variable
+    reasoning: true,
     capabilities: { vision: true },
     cost: { input: 0, output: 0 },
   },

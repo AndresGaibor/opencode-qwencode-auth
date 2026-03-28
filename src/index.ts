@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-import { QWEN_PROVIDER_ID, QWEN_API_CONFIG, QWEN_MODELS, getQwenHeaders } from './constants.js';
+import { QWEN_PROVIDER_ID, QWEN_API_CONFIG, QWEN_MODELS, getQwenHeaders, resolveReasoningDefault } from './constants.js';
 import type { QwenCredentials } from './types.js';
 import { resolveBaseUrl } from './plugin/auth.js';
 import {
@@ -100,9 +100,49 @@ export const QwenAuthPlugin = async (_input: unknown) => {
           }
         }
 
-        // Get latest valid credentials
-        const credentials = await tokenManager.getValidCredentials();
-        if (!credentials?.accessToken) return null;
+        // Helper to resolve credentials from various sources
+        const resolveCredentials = async (): Promise<{
+          accessToken: string;
+          refreshToken?: string;
+          expiryDate?: number;
+          resourceUrl?: string;
+        } | null> => {
+          // 1. Try OpenCode's native auth first (if available)
+          if (typeof getAuth === 'function') {
+            try {
+              const openCodeAuth = await getAuth();
+              if (openCodeAuth?.accessToken) {
+                debugLogger.info('Using OpenCode native auth');
+                return {
+                  accessToken: openCodeAuth.accessToken,
+                  refreshToken: openCodeAuth.refreshToken,
+                  expiryDate: openCodeAuth.expires ? 
+                    (typeof openCodeAuth.expires === 'number' ? openCodeAuth.expires : Date.now() + 3600000) 
+                    : undefined,
+                  resourceUrl: openCodeAuth.resourceUrl,
+                };
+              }
+            } catch (e) {
+              debugLogger.debug('OpenCode getAuth() not available or failed, falling back to local credentials');
+            }
+          }
+
+          // 2. Fallback to local token manager (qwen-code credentials file)
+          const localCreds = await tokenManager.getValidCredentials();
+          if (localCreds?.accessToken) {
+            debugLogger.info('Using local credentials from token manager');
+            return localCreds;
+          }
+
+          return null;
+        };
+
+        // Get valid credentials from OpenCode or local fallback
+        const credentials = await resolveCredentials();
+        if (!credentials?.accessToken) {
+          debugLogger.warn('No valid credentials available from any source');
+          return null;
+        }
 
         const baseURL = resolveBaseUrl(credentials.resourceUrl);
 
@@ -193,15 +233,24 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                 if (!response.ok) {
                   const errorText = await response.text().catch(() => '');
                   const error: any = new Error(`HTTP ${response.status}: ${errorText}`);
+                  
+                  // Attach all necessary properties for retry logic and debugging
                   error.status = response.status;
+                  error.statusText = response.statusText;
+                  error.response = response;
+                  error.headers = Object.fromEntries(response.headers.entries());
+                  error.bodyText = errorText;
+                  error.url = url;
+                  error.method = options?.method || 'GET';
                   
                   // Add context for debugging
                   debugLogger.error('Request failed', {
                     status: response.status,
                     statusText: response.statusText,
                     url: url.substring(0, 100) + (url.length > 100 ? '...' : ''),
-                    method: options?.method || 'GET',
-                    errorText: errorText.substring(0, 200) + (errorText.length > 200 ? '...' : '')
+                    method: error.method,
+                    errorText: errorText.substring(0, 200) + (errorText.length > 200 ? '...' : ''),
+                    hasRetryAfter: !!error.headers['retry-after']
                   });
                   
                   throw error;
@@ -303,12 +352,16 @@ export const QwenAuthPlugin = async (_input: unknown) => {
         models: Object.fromEntries(
           Object.entries(QWEN_MODELS).map(([id, m]) => {
             const hasVision = 'capabilities' in m && m.capabilities?.vision;
+            // Use environment variable override for reasoning
+            const reasoningEnabled = resolveReasoningDefault(m.id);
+            
             return [
               id,
               {
                 id: m.id,
                 name: m.name,
-                reasoning: m.reasoning,
+                reasoning: reasoningEnabled,
+                tool_call: true, // Qwen models support function calling via OpenAI-compatible API
                 limit: { context: m.contextWindow, output: m.maxOutput },
                 cost: m.cost,
                 modalities: { 
@@ -322,6 +375,51 @@ export const QwenAuthPlugin = async (_input: unknown) => {
       };
 
       config.provider = providers;
+    },
+
+    /**
+     * Chat params hook - intercepts parameters before API call
+     * 
+     * This hook allows modifying request parameters before they are sent to the model.
+     * Currently provides structural foundation for future reasoning control.
+     * 
+     * Future capabilities:
+     * - Pass reasoning-specific parameters when validated
+     * - Control temperature and other generation params
+     * - Add extra_body options if supported by the endpoint
+     */
+    chat: {
+      params: async (params: {
+        model: string;
+        messages?: unknown[];
+        tools?: unknown[];
+        temperature?: number;
+        max_tokens?: number;
+        [key: string]: unknown;
+      }) => {
+        const modelId = params.model;
+        
+        // Log for debugging - helps understand what parameters are being passed
+        debugLogger.debug('chat.params hook called', {
+          model: modelId,
+          hasMessages: !!params.messages,
+          hasTools: !!params.tools,
+          temperature: params.temperature,
+          max_tokens: params.max_tokens,
+        });
+
+        // For now, return params unchanged
+        // Future: Add reasoning-specific parameters here when validated
+        // Example (not yet enabled):
+        // if (modelId === 'coder-model' && resolveReasoningDefault(modelId)) {
+        //   return {
+        //     ...params,
+        //     // reasoning_config: { ... }  // When we validate the correct format
+        //   };
+        // }
+
+        return params;
+      },
     },
   };
 };

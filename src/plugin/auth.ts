@@ -2,15 +2,19 @@
  * Qwen Credentials Management
  *
  * Handles saving credentials to ~/.qwen/oauth_creds.json
+ * Compatible with qwen-code official client format
  */
 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 import type { QwenCredentials } from '../types.js';
 import { QWEN_API_CONFIG } from '../constants.js';
+import { createDebugLogger } from '../utils/debug-logger.js';
+
+const debugLogger = createDebugLogger('AUTH');
 
 /**
  * Get the path to the credentials file
@@ -77,38 +81,97 @@ function validateCredentials(data: unknown): QwenCredentials {
 /**
  * Load credentials from file and map to camelCase QwenCredentials
  * Includes comprehensive validation matching official client
+ * Handles corrupted files gracefully with detailed error reporting
  */
 export function loadCredentials(): QwenCredentials | null {
   const credPath = getCredentialsPath();
+  
   if (!existsSync(credPath)) {
+    debugLogger.debug('Credentials file does not exist', { path: credPath });
     return null;
   }
 
   try {
-    const content = readFileSync(credPath, 'utf8');
-    const data = JSON.parse(content);
+    // Get file stats for diagnostic info
+    const stats = statSync(credPath);
+    
+    // Read file content
+    let content: string;
+    try {
+      content = readFileSync(credPath, 'utf8');
+    } catch (readError) {
+      debugLogger.error('Failed to read credentials file', {
+        path: credPath,
+        error: readError instanceof Error ? readError.message : String(readError),
+        fileSize: stats.size,
+        modified: stats.mtime.toISOString()
+      });
+      return null;
+    }
+
+    // Check for empty file
+    if (!content || content.trim().length === 0) {
+      debugLogger.warn('Credentials file is empty', {
+        path: credPath,
+        fileSize: stats.size
+      });
+      return null;
+    }
+
+    // Parse JSON
+    let data: unknown;
+    try {
+      data = JSON.parse(content);
+    } catch (parseError) {
+      debugLogger.error('Credentials file contains invalid JSON', {
+        path: credPath,
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+        fileSize: stats.size,
+        contentPreview: content.substring(0, 100) + (content.length > 100 ? '...' : '')
+      });
+      return null;
+    }
+
+    // Validate data is an object
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      debugLogger.error('Credentials file does not contain a valid object', {
+        path: credPath,
+        dataType: typeof data,
+        isArray: Array.isArray(data)
+      });
+      return null;
+    }
     
     // Convert snake_case (file format) to camelCase (internal format)
     // This matches qwen-code format for compatibility
     const converted: QwenCredentials = {
-      accessToken: data.access_token,
-      tokenType: data.token_type || 'Bearer',
-      refreshToken: data.refresh_token,
-      resourceUrl: data.resource_url,
-      expiryDate: data.expiry_date,
-      scope: data.scope,
+      accessToken: (data as Record<string, unknown>).access_token as string,
+      tokenType: ((data as Record<string, unknown>).token_type as string) || 'Bearer',
+      refreshToken: (data as Record<string, unknown>).refresh_token as string | undefined,
+      resourceUrl: (data as Record<string, unknown>).resource_url as string | undefined,
+      expiryDate: (data as Record<string, unknown>).expiry_date as number | undefined,
+      scope: (data as Record<string, unknown>).scope as string | undefined,
     };
     
     // Validate converted credentials structure
     const validated = validateCredentials(converted);
     
+    debugLogger.debug('Credentials loaded successfully', {
+      path: credPath,
+      hasAccessToken: !!validated.accessToken,
+      hasRefreshToken: !!validated.refreshToken,
+      expiryDate: validated.expiryDate ? new Date(validated.expiryDate).toISOString() : 'N/A'
+    });
+    
     return validated;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[QwenAuth] Failed to load credentials:', message);
+    debugLogger.error('Unexpected error loading credentials', {
+      path: credPath,
+      error: message,
+      stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3).join('\n') : undefined
+    });
     
-    // Corrupted file - suggest re-authentication
-    console.error('[QwenAuth] Credentials file may be corrupted. Please re-authenticate.');
     return null;
   }
 }

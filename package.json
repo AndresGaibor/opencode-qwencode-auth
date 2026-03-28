@@ -1,7 +1,7 @@
 {
   "name": "opencode-qwencode-auth",
-  "version": "1.5.0",
-  "description": "Qwen OAuth authentication plugin for OpenCode - Access Qwen AI models (Coder, Vision) with your qwen.ai account - Fixes rate limiting (Issue #4)",
+  "version": "1.6.0",
+  "description": "Qwen OAuth authentication plugin for OpenCode - Access Qwen AI models with reasoning and tool calling support, improved rate limiting, and robust auth handling",
   "module": "index.ts",
   "type": "module",
   "scripts": {
@@ -28,17 +28,22 @@
     "llm",
     "opencode-plugins",
     "rate-limit-fix",
-    "dashscope"
+    "dashscope",
+    "reasoning",
+    "tool-calling"
   ],
   "author": "Gustavo Dias <me@gustavodias.dev>",
+  "contributors": [
+    "Andres Gaibor"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gustavodiasdev/opencode-qwencode-auth.git"
+    "url": "git+https://github.com/AndresGaibor/opencode-qwencode-auth.git"
   },
-  "homepage": "https://github.com/gustavodiasdev/opencode-qwencode-auth#readme",
+  "homepage": "https://github.com/AndresGaibor/opencode-qwencode-auth#readme",
   "bugs": {
-    "url": "https://github.com/gustavodiasdev/opencode-qwencode-auth/issues"
+    "url": "https://github.com/AndresGaibor/opencode-qwencode-auth/issues"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.1.48",

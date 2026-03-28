@@ -142,36 +142,74 @@ export function getErrorStatus(error: unknown): number | undefined {
 
 /**
  * Extracts the Retry-After delay from an error object's headers.
+ * Checks both error.headers and error.response.headers for compatibility.
  */
 function getRetryAfterDelayMs(error: unknown): number {
-  if (typeof error === 'object' && error !== null) {
+  if (typeof error !== 'object' || error === null) {
+    return 0;
+  }
+
+  const err = error as { 
+    headers?: unknown; 
+    response?: { headers?: unknown } 
+  };
+
+  // Helper to parse Retry-After header value
+  const parseRetryAfter = (retryAfterHeader: unknown): number => {
+    if (typeof retryAfterHeader !== 'string') {
+      return 0;
+    }
+    
+    // Try parsing as seconds
+    const retryAfterSeconds = parseInt(retryAfterHeader, 10);
+    if (!isNaN(retryAfterSeconds)) {
+      return retryAfterSeconds * 1000;
+    }
+    
+    // Try parsing as HTTP date
+    const retryAfterDate = new Date(retryAfterHeader);
+    if (!isNaN(retryAfterDate.getTime())) {
+      return Math.max(0, retryAfterDate.getTime() - Date.now());
+    }
+    
+    return 0;
+  };
+
+  // First, check error.headers directly (our custom error shape)
+  if (
+    'headers' in err &&
+    typeof err.headers === 'object' &&
+    err.headers !== null
+  ) {
+    const headers = err.headers as Record<string, unknown>;
+    const retryAfterHeader = headers['retry-after'] ?? headers['Retry-After'];
+    const delay = parseRetryAfter(retryAfterHeader);
+    if (delay > 0) {
+      return delay;
+    }
+  }
+
+  // Fallback: check error.response.headers (standard fetch error shape)
+  if (
+    'response' in err &&
+    typeof err.response === 'object' &&
+    err.response !== null
+  ) {
+    const response = err.response as { headers?: unknown };
     if (
-      'response' in error &&
-      typeof (error as { response?: unknown }).response === 'object' &&
-      (error as { response?: unknown }).response !== null
+      'headers' in response &&
+      typeof response.headers === 'object' &&
+      response.headers !== null
     ) {
-      const response = (error as { response: { headers?: unknown } }).response;
-      if (
-        'headers' in response &&
-        typeof response.headers === 'object' &&
-        response.headers !== null
-      ) {
-        const headers = response.headers as { 'retry-after'?: unknown };
-        const retryAfterHeader = headers['retry-after'];
-        if (typeof retryAfterHeader === 'string') {
-          const retryAfterSeconds = parseInt(retryAfterHeader, 10);
-          if (!isNaN(retryAfterSeconds)) {
-            return retryAfterSeconds * 1000;
-          }
-          // It might be an HTTP date
-          const retryAfterDate = new Date(retryAfterHeader);
-          if (!isNaN(retryAfterDate.getTime())) {
-            return Math.max(0, retryAfterDate.getTime() - Date.now());
-          }
-        }
+      const headers = response.headers as Record<string, unknown>;
+      const retryAfterHeader = headers['retry-after'] ?? headers['Retry-After'];
+      const delay = parseRetryAfter(retryAfterHeader);
+      if (delay > 0) {
+        return delay;
       }
     }
   }
+
   return 0;
 }
 

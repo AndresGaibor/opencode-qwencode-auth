@@ -1,8 +1,7 @@
 # 🤖 Qwen Code OAuth Plugin for OpenCode
 
 ![npm version](https://img.shields.io/npm/v/opencode-qwencode-auth)
-![License](https://img.shields.io/github/license/gustavodiasdev/opencode-qwencode-auth)
-![GitHub stars](https://img.shields.io/github/stars/gustavodiasdev/opencode-qwencode-auth)
+![License](https://img.shields.io/github/license/AndresGaibor/opencode-qwencode-auth)
 
 <p align="center">
   <img src="assets/screenshot.png" alt="OpenCode with Qwen Code" width="800">
@@ -21,6 +20,59 @@
 - 🔄 **Auto-refresh** - Tokens renewed automatically before expiration
 - ⏱️ **Reliability** - Built-in request throttling and automatic retry for transient errors
 - 🔗 **qwen-code compatible** - Reuses credentials from `~/.qwen/oauth_creds.json`
+- 🧠 **Reasoning Support** - Qwen 3.5 Plus hybrid reasoning enabled by default
+- 🔧 **Tool Calling** - Full function calling support for agentic workflows
+
+## 🆕 Enhancements in this Fork
+
+This fork includes several improvements over the original:
+
+### Reasoning Enabled by Default
+- `coder-model` now has `reasoning: true` by default
+- Qwen 3.5 Plus supports hybrid reasoning (thinking before responding)
+- Can be disabled via `OPENCODE_QWEN_REASONING=off` environment variable
+
+### Tool Calling Support
+- Explicit `tool_call: true` declaration in model capabilities
+- Full support for function calling through OpenAI-compatible API
+
+### Robust Request Queue
+- **Real serialization** - Requests are properly queued using promise chaining
+- **Sliding window rate limiting** - Enforces 60 requests per 60 seconds
+- **Reduced jitter** - 50-150ms instead of 500-1500ms for better responsiveness
+
+### Improved Error Handling
+- HTTP errors include all necessary properties (`status`, `statusText`, `headers`, `bodyText`, `url`, `method`)
+- Retry-After headers are now properly detected and respected
+- Better error messages for debugging
+
+### OpenCode Native Auth Priority
+- Uses OpenCode's `getAuth()` first before falling back to local credentials
+- Better integration with OpenCode's auth system
+
+### Better Token Manager
+- Proper file watcher cleanup with `dispose()` method
+- Fixed scope bug in token refresh error handling
+- Enhanced stale lock detection
+
+## 🧠 Reasoning Configuration
+
+Reasoning is enabled by default for `coder-model`. You can control it with the `OPENCODE_QWEN_REASONING` environment variable:
+
+| Value | Behavior |
+|-------|----------|
+| `on` (default) | Enable reasoning for all models |
+| `off` | Disable reasoning |
+| `auto` | Model-specific (coder-model = on, others = off) |
+
+Example:
+```bash
+# Disable reasoning
+OPENCODE_QWEN_REASONING=off opencode
+
+# Use auto mode
+OPENCODE_QWEN_REASONING=auto opencode
+```
 
 ## 🚀 Installation
 
@@ -43,17 +95,17 @@ Edit `~/.config/opencode/opencode.json`:
 }
 ```
 
-#### From Git repository
+#### From Git repository (this fork)
 ```json
 {
-  "plugin": ["opencode-qwencode-auth@git+https://github.com/gustavodiasdev/opencode-qwencode-auth.git#main"]
+  "plugin": ["opencode-qwencode-auth@git+https://github.com/AndresGaibor/opencode-qwencode-auth.git#main"]
 }
 ```
 
 #### Specific version
 ```json
 {
-  "plugin": ["opencode-qwencode-auth@1.3.0"]
+  "plugin": ["opencode-qwencode-auth@1.6.0"]
 }
 ```
 
@@ -99,6 +151,15 @@ Select **"Qwen Code (qwen.ai OAuth)"**.
 
 > **Note:** This plugin aligns with the official `qwen-code` client. The `coder-model` alias automatically routes to the best available Qwen 3.5 Plus model with hybrid reasoning and vision capabilities.
 
+### Model Capabilities
+
+| Capability | Supported | Notes |
+|------------|-----------|-------|
+| `reasoning` | ✅ | Enabled by default, configurable via env |
+| `tool_call` | ✅ | Full function calling support |
+| `vision` | ✅ | Image input supported |
+| `text` | ✅ | Text input/output |
+
 ### Using the model
 
 ```bash
@@ -138,14 +199,17 @@ OPENCODE_QWEN_DEBUG=1 opencode
 
 ```bash
 # Clone the repository
-git clone https://github.com/gustavodiasdev/opencode-qwencode-auth.git
+git clone https://github.com/AndresGaibor/opencode-qwencode-auth.git
 cd opencode-qwencode-auth
 
 # Install dependencies
 bun install
 
+# Build
+bun run build
+
 # Run tests
-bun run tests/debug.ts full
+bun test
 ```
 
 ### Project Structure
@@ -155,7 +219,7 @@ src/
 ├── qwen/               # OAuth implementation
 ├── plugin/             # Token management & caching
 ├── utils/              # Retry, locking and logging utilities
-├── constants.ts        # Models and endpoints
+├── constants.ts        # Models, endpoints, and reasoning config
 └── index.ts            # Plugin entry point
 ```
 

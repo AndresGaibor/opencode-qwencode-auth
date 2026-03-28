@@ -16,12 +16,13 @@ import { refreshAccessToken } from '../qwen/oauth.js';
 import type { QwenCredentials } from '../types.js';
 import { createDebugLogger } from '../utils/debug-logger.js';
 import { FileLock } from '../utils/file-lock.js';
-import { watch } from 'node:fs';
+import { watch, FSWatcher } from 'node:fs';
 import { CredentialsClearRequiredError } from '../errors.js';
 
 const debugLogger = createDebugLogger('TOKEN_MANAGER');
 const TOKEN_REFRESH_BUFFER_MS = 30 * 1000; // 30 seconds
 const CACHE_CHECK_INTERVAL_MS = 5000; // 5 seconds (matches official client)
+const STALE_LOCK_THRESHOLD_MS = 30 * 1000; // 30 seconds - consider lock stale if older
 
 interface CacheState {
   credentials: QwenCredentials | null;
@@ -36,6 +37,7 @@ class TokenManager {
   private refreshPromise: Promise<QwenCredentials | null> | null = null;
   private lastFileCheck = 0;
   private fileWatcherInitialized = false;
+  private fileWatcher: FSWatcher | null = null;
 
   constructor() {
     this.initializeFileWatcher();
@@ -51,7 +53,7 @@ class TokenManager {
     const credPath = getCredentialsPath();
     
     try {
-      watch(credPath, (eventType) => {
+      this.fileWatcher = watch(credPath, (eventType) => {
         if (eventType === 'change') {
           // File was modified externally (e.g., opencode auth login)
           // Invalidate cache to force reload on next request
@@ -65,6 +67,23 @@ class TokenManager {
     } catch (error) {
       debugLogger.error('Failed to initialize file watcher', error);
       // File watcher is optional, continue without it
+    }
+  }
+
+  /**
+   * Dispose of resources (file watcher, etc.)
+   * Call this when the token manager is no longer needed
+   */
+  dispose(): void {
+    if (this.fileWatcher) {
+      try {
+        this.fileWatcher.close();
+        debugLogger.info('File watcher closed');
+      } catch (error) {
+        debugLogger.error('Error closing file watcher', error);
+      }
+      this.fileWatcher = null;
+      this.fileWatcherInitialized = false;
     }
   }
 
@@ -222,9 +241,9 @@ class TokenManager {
       return null;
     }
 
+    const startTime = Date.now();
     try {
       debugLogger.info('Calling refreshAccessToken API...');
-      const startTime = Date.now();
       const refreshed = await refreshAccessToken(current.refreshToken);
       const elapsed = Date.now() - startTime;
       
