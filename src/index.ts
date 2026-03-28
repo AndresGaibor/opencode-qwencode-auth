@@ -6,13 +6,18 @@
  *
  * Provider: qwen-code -> portal.qwen.ai/v1
  * Modelos: qwen3-coder-plus, qwen3-coder-flash, coder-model, vision-model
+ *
+ * Auth Architecture:
+ * - OpenCode native auth is the primary source (via getAuth())
+ * - Local credentials file (~/.qwen/oauth_creds.json) is fallback/sync
+ * - Both are kept in sync for compatibility with qwen-code
  */
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 import { QWEN_PROVIDER_ID, QWEN_API_CONFIG, QWEN_MODELS, getQwenHeaders, resolveReasoningDefault } from './constants.js';
-import type { QwenCredentials } from './types.js';
+import type { QwenCredentials, OpenCodeOAuthAuth, RuntimeAuth } from './types.js';
 import { resolveBaseUrl } from './plugin/auth.js';
 import {
   generatePKCE,
@@ -25,6 +30,10 @@ import { retryWithBackoff, getErrorStatus } from './utils/retry.js';
 import { RequestQueue } from './plugin/request-queue.js';
 import { tokenManager } from './plugin/token-manager.js';
 import { createDebugLogger } from './utils/debug-logger.js';
+import { formatQwenRefreshParts, isOpenCodeOAuthAuth, parseQwenRefreshParts } from './plugin/opencode-auth.js';
+import { resolveRuntimeAuth, hasValidAccessToken, type GetAuthFn } from './plugin/runtime-auth.js';
+import { refreshOpenCodeToken, runtimeAuthToOpenCodeAuth, type OpenCodeClient } from './plugin/opencode-token.js';
+import { transformResponse } from './plugin/response-transform.js';
 
 const debugLogger = createDebugLogger('PLUGIN');
 
@@ -84,13 +93,29 @@ function isAuthError(error: unknown): boolean {
 // Plugin Principal
 // ============================================
 
-export const QwenAuthPlugin = async (_input: unknown) => {
+/**
+ * Plugin context provided by OpenCode
+ */
+interface PluginContext {
+  client: OpenCodeClient;
+  directory: string;
+}
+
+export const QwenAuthPlugin = async (ctx: PluginContext) => {
+  const { client, directory } = ctx;
+  
+  debugLogger.info('Plugin initialized', {
+    sessionId: PLUGIN_SESSION_ID,
+    directory,
+    hasClient: !!client,
+  });
+
   return {
     auth: {
       provider: QWEN_PROVIDER_ID,
 
       loader: async (
-        getAuth: any,
+        getAuth: GetAuthFn,
         provider: { models?: Record<string, { cost?: { input: number; output: number } }> },
       ) => {
         // Zerar custo dos modelos (gratuito via OAuth)
@@ -100,54 +125,123 @@ export const QwenAuthPlugin = async (_input: unknown) => {
           }
         }
 
-        // Helper to resolve credentials from various sources
-        const resolveCredentials = async (): Promise<{
-          accessToken: string;
-          refreshToken?: string;
-          expiryDate?: number;
-          resourceUrl?: string;
-        } | null> => {
-          // 1. Try OpenCode's native auth first (if available)
-          if (typeof getAuth === 'function') {
-            try {
-              const openCodeAuth = await getAuth();
-              if (openCodeAuth?.accessToken) {
-                debugLogger.info('Using OpenCode native auth');
-                return {
-                  accessToken: openCodeAuth.accessToken,
-                  refreshToken: openCodeAuth.refreshToken,
-                  expiryDate: openCodeAuth.expires ? 
-                    (typeof openCodeAuth.expires === 'number' ? openCodeAuth.expires : Date.now() + 3600000) 
-                    : undefined,
-                  resourceUrl: openCodeAuth.resourceUrl,
+        // ============================================
+        // Auth Resolution with Auto-Refresh
+        // ============================================
+        // Priority:
+        // 1. OpenCode auth (if valid or refreshable)
+        // 2. Local credentials (fallback)
+        // 3. Force re-auth (return null)
+        
+        let runtimeAuth: RuntimeAuth | null = null;
+        let authSource: 'opencode' | 'local' | 'none' = 'none';
+
+        // Try OpenCode native auth first
+        if (typeof getAuth === 'function') {
+          try {
+            const openCodeAuth = await getAuth();
+            
+            if (openCodeAuth && isOpenCodeOAuthAuth(openCodeAuth)) {
+              // Check if token is valid
+              const parts = parseQwenRefreshParts(openCodeAuth.refresh);
+              const isExpired = !openCodeAuth.expires || Date.now() >= openCodeAuth.expires - 30000;
+              
+              if (openCodeAuth.access && !isExpired) {
+                // Token is valid, use it
+                runtimeAuth = {
+                  source: 'opencode',
+                  access: openCodeAuth.access,
+                  refresh: parts.refreshToken,
+                  expires: openCodeAuth.expires,
+                  resourceUrl: parts.resourceUrl,
                 };
+                authSource = 'opencode';
+                debugLogger.info('Using valid OpenCode native auth');
+              } else if (parts.refreshToken) {
+                // Token expired but we have refresh token - try to refresh
+                debugLogger.info('OpenCode token expired, attempting refresh...');
+                
+                const refreshResult = await refreshOpenCodeToken(openCodeAuth, {
+                  client,
+                  providerId: QWEN_PROVIDER_ID,
+                  syncToLocal: true,
+                });
+                
+                if (refreshResult.success && refreshResult.auth) {
+                  const newParts = parseQwenRefreshParts(refreshResult.auth.refresh);
+                  runtimeAuth = {
+                    source: 'opencode',
+                    access: refreshResult.auth.access || '',
+                    refresh: newParts.refreshToken,
+                    expires: refreshResult.auth.expires,
+                    resourceUrl: newParts.resourceUrl,
+                  };
+                  authSource = 'opencode';
+                  debugLogger.info('OpenCode token refreshed successfully');
+                } else {
+                  // Refresh failed - need re-authentication
+                  debugLogger.warn('OpenCode token refresh failed, need re-authentication');
+                  
+                  // Clear the invalid OpenCode auth
+                  try {
+                    await client.auth.set({
+                      path: { id: QWEN_PROVIDER_ID },
+                      body: { type: 'oauth', refresh: '' },
+                    });
+                  } catch (e) {
+                    debugLogger.error('Failed to clear invalid OpenCode auth', e);
+                  }
+                  
+                  // Don't fallback to local - force re-auth
+                  console.error('\n[Qwen Auth] Token expired and refresh failed. Please re-authenticate:');
+                  console.error('  Run: opencode auth login\n');
+                  return null;
+                }
+              } else {
+                // No refresh token - need re-auth
+                debugLogger.warn('OpenCode auth expired with no refresh token, need re-authentication');
+                return null;
               }
-            } catch (e) {
-              debugLogger.debug('OpenCode getAuth() not available or failed, falling back to local credentials');
             }
+          } catch (e) {
+            debugLogger.error('Failed to get OpenCode auth', e);
           }
+        }
 
-          // 2. Fallback to local token manager (qwen-code credentials file)
+        // Fallback to local credentials if OpenCode auth not available
+        if (!runtimeAuth) {
           const localCreds = await tokenManager.getValidCredentials();
+          
           if (localCreds?.accessToken) {
-            debugLogger.info('Using local credentials from token manager');
-            return localCreds;
+            runtimeAuth = {
+              source: 'local',
+              access: localCreds.accessToken,
+              refresh: localCreds.refreshToken,
+              expires: localCreds.expiryDate,
+              resourceUrl: localCreds.resourceUrl,
+            };
+            authSource = 'local';
+            debugLogger.info('Using local credentials');
           }
+        }
 
-          return null;
-        };
-
-        // Get valid credentials from OpenCode or local fallback
-        const credentials = await resolveCredentials();
-        if (!credentials?.accessToken) {
+        // No credentials available from any source
+        if (!runtimeAuth?.access) {
           debugLogger.warn('No valid credentials available from any source');
+          console.error('\n[Qwen Auth] No credentials found. Please authenticate:');
+          console.error('  Run: opencode auth login\n');
           return null;
         }
 
-        const baseURL = resolveBaseUrl(credentials.resourceUrl);
+        const baseURL = resolveBaseUrl(runtimeAuth.resourceUrl);
+
+        debugLogger.info('Loader initialized', {
+          source: authSource,
+          hasBaseURL: !!baseURL,
+        });
 
         return {
-          apiKey: credentials.accessToken,
+          apiKey: runtimeAuth.access,
           baseURL: baseURL,
           headers: {
             ...getQwenHeaders(),
@@ -158,11 +252,17 @@ export const QwenAuthPlugin = async (_input: unknown) => {
               let authRetryCount = 0;
 
               const executeRequest = async (): Promise<Response> => {
-                // Get latest token (possibly refreshed by concurrent request)
-                const currentCreds = await tokenManager.getValidCredentials();
-                const token = currentCreds?.accessToken;
+                // Resolve auth FRESH for each request (like Antigravity)
+                // This ensures we use the most up-to-date credentials
+                const authResult = await resolveRuntimeAuth(getAuth, tokenManager);
+                const runtimeAuth = authResult.auth;
                 
-                if (!token) throw new Error('No access token available');
+                if (!runtimeAuth?.access) {
+                  throw new Error('No access token available');
+                }
+
+                const token = runtimeAuth.access;
+                const authSource = runtimeAuth.source;
 
                 // Prepare merged headers
                 const mergedHeaders: Record<string, string> = {
@@ -191,10 +291,6 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                 // Force our Authorization token
                 mergedHeaders['Authorization'] = `Bearer ${token}`;
 
-                // Optional: X-Metadata might be expected by some endpoints for free quota tracking
-                // but let's try without it first to match official client closer
-                // mergedHeaders['X-Metadata'] = JSON.stringify({ ... });
-
                 // Perform the request
                 const response = await fetch(url, {
                   ...options,
@@ -204,27 +300,87 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                 // Reactive recovery for 401 (token expired mid-session)
                 if (response.status === 401 && authRetryCount < 1) {
                   authRetryCount++;
-                  debugLogger.warn('401 Unauthorized detected. Forcing token refresh...', {
+                  debugLogger.warn('401 Unauthorized detected. Attempting token refresh...', {
                     url: url.substring(0, 100) + (url.length > 100 ? '...' : ''),
                     attempt: authRetryCount,
-                    maxRetries: 1
+                    authSource,
                   });
                   
-                  // Force refresh from API
                   const refreshStart = Date.now();
-                  const refreshed = await tokenManager.getValidCredentials(true);
+                  let refreshedAuth: RuntimeAuth | null = null;
+                  
+                  // Refresh based on auth source
+                  if (authSource === 'opencode' && typeof getAuth === 'function') {
+                    // Refresh via OpenCode
+                    try {
+                      const currentAuth = await getAuth();
+                      if (currentAuth && isOpenCodeOAuthAuth(currentAuth)) {
+                        const result = await refreshOpenCodeToken(currentAuth, {
+                          client,
+                          providerId: QWEN_PROVIDER_ID,
+                          syncToLocal: true,
+                        });
+                        
+                        if (result.success && result.auth) {
+                          refreshedAuth = {
+                            source: 'opencode',
+                            access: result.auth.access || '',
+                            refresh: result.auth.refresh,
+                            expires: result.auth.expires,
+                            resourceUrl: parseRefreshForUrl(result.auth.refresh),
+                          };
+                        }
+                      }
+                    } catch (refreshError) {
+                      debugLogger.error('OpenCode refresh failed', refreshError);
+                    }
+                  } else {
+                    // Refresh via local token manager
+                    const refreshedCreds = await tokenManager.getValidCredentials(true);
+                    if (refreshedCreds?.accessToken) {
+                      refreshedAuth = {
+                        source: 'local',
+                        access: refreshedCreds.accessToken,
+                        refresh: refreshedCreds.refreshToken,
+                        expires: refreshedCreds.expiryDate,
+                        resourceUrl: refreshedCreds.resourceUrl,
+                      };
+                      
+                      // Sync to OpenCode if we have a client
+                      if (client && refreshedCreds.refreshToken) {
+                        try {
+                          const openCodeAuth: OpenCodeOAuthAuth = {
+                            type: 'oauth',
+                            access: refreshedCreds.accessToken,
+                            refresh: formatQwenRefreshParts({
+                              refreshToken: refreshedCreds.refreshToken,
+                              resourceUrl: refreshedCreds.resourceUrl,
+                            }),
+                            expires: refreshedCreds.expiryDate,
+                          };
+                          await client.auth.set({
+                            path: { id: QWEN_PROVIDER_ID },
+                            body: openCodeAuth,
+                          });
+                          debugLogger.info('Synced refreshed local creds to OpenCode');
+                        } catch (syncError) {
+                          debugLogger.error('Failed to sync to OpenCode', syncError);
+                        }
+                      }
+                    }
+                  }
+                  
                   const refreshElapsed = Date.now() - refreshStart;
                   
-                  if (refreshed?.accessToken) {
+                  if (refreshedAuth) {
                     debugLogger.info('Token refreshed successfully, retrying request...', {
                       refreshElapsed,
-                      newTokenExpiry: refreshed.expiryDate ? new Date(refreshed.expiryDate).toISOString() : 'N/A'
+                      newSource: refreshedAuth.source,
                     });
                     return executeRequest(); // Recursive retry with new token
                   } else {
                     debugLogger.error('Failed to refresh token after 401', {
                       refreshElapsed,
-                      hasRefreshToken: !!refreshed?.accessToken
                     });
                   }
                 }
@@ -256,7 +412,8 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                   throw error;
                 }
 
-                return response;
+                // Transform response to ensure reasoning fields are present
+                return transformResponse(response);
               };
 
               // Use official retry logic for 429/5xx errors
@@ -306,10 +463,14 @@ export const QwenAuthPlugin = async (_input: unknown) => {
                         const credentials = tokenResponseToCredentials(tokenResponse);
                         tokenManager.setCredentials(credentials);
 
+                        // Return in OpenCode format with resourceUrl packed in refresh
                         return {
                           type: 'success' as const,
                           access: credentials.accessToken,
-                          refresh: credentials.refreshToken ?? '',
+                          refresh: formatQwenRefreshParts({
+                            refreshToken: credentials.refreshToken,
+                            resourceUrl: credentials.resourceUrl,
+                          }),
                           expires: credentials.expiryDate || Date.now() + 3600000,
                         };
                       }
@@ -379,49 +540,40 @@ export const QwenAuthPlugin = async (_input: unknown) => {
 
     /**
      * Chat params hook - intercepts parameters before API call
-     * 
-     * This hook allows modifying request parameters before they are sent to the model.
-     * Currently provides structural foundation for future reasoning control.
-     * 
-     * Future capabilities:
-     * - Pass reasoning-specific parameters when validated
-     * - Control temperature and other generation params
-     * - Add extra_body options if supported by the endpoint
+     * Uses flat key format as per OpenCode plugin API
      */
-    chat: {
-      params: async (params: {
-        model: string;
-        messages?: unknown[];
-        tools?: unknown[];
-        temperature?: number;
-        max_tokens?: number;
-        [key: string]: unknown;
-      }) => {
-        const modelId = params.model;
-        
-        // Log for debugging - helps understand what parameters are being passed
-        debugLogger.debug('chat.params hook called', {
-          model: modelId,
-          hasMessages: !!params.messages,
-          hasTools: !!params.tools,
-          temperature: params.temperature,
-          max_tokens: params.max_tokens,
-        });
+    'chat.params': async (params: {
+      model: string;
+      messages?: unknown[];
+      tools?: unknown[];
+      temperature?: number;
+      max_tokens?: number;
+      [key: string]: unknown;
+    }) => {
+      const modelId = params.model;
+      
+      // Log for debugging - helps understand what parameters are being passed
+      debugLogger.debug('chat.params hook called', {
+        model: modelId,
+        hasMessages: !!params.messages,
+        hasTools: !!params.tools,
+        temperature: params.temperature,
+        max_tokens: params.max_tokens,
+      });
 
-        // For now, return params unchanged
-        // Future: Add reasoning-specific parameters here when validated
-        // Example (not yet enabled):
-        // if (modelId === 'coder-model' && resolveReasoningDefault(modelId)) {
-        //   return {
-        //     ...params,
-        //     // reasoning_config: { ... }  // When we validate the correct format
-        //   };
-        // }
-
-        return params;
-      },
+      // Return params unchanged - future reasoning params can be added here
+      return params;
     },
   };
 };
+
+/**
+ * Helper to extract resourceUrl from packed refresh field
+ */
+function parseRefreshForUrl(refresh: string): string | undefined {
+  const pipeIndex = refresh.indexOf('|');
+  if (pipeIndex === -1) return undefined;
+  return refresh.slice(pipeIndex + 1) || undefined;
+}
 
 export default QwenAuthPlugin;
